@@ -5,6 +5,7 @@ let ready;
 const init = () => (ready ||= (async () => {
   await sql`create table if not exists users(name text primary key, h text)`;
   await sql`create table if not exists checks(name text, day date, rd bool default false, pr bool default false, primary key(name,day))`;
+  await sql`create table if not exists scripture(ref text primary key, body text)`;
   await sql`create table if not exists prayers(id serial primary key, name text, body text, anon bool, status text default 'pending')`;
 })());
 const clean = s => String(s || '').trim().replace(/\s+/g, ' ');
@@ -20,6 +21,20 @@ export default async function handler(req, res) {
     if (b.a === 'role') return res.json({ role });
     if (b.a === 'board') return res.json({ rows: await sql`select name, to_char(day,'YYYY-MM-DD') as day, rd, pr from checks` });
     if (b.a === 'prayers') return res.json({ rows: await sql`select id, case when anon then 'Anonymous' else name end as who, body from prayers where status='approved' order by id desc` });
+    if (b.a === 'verse') {
+      const ref = clean(b.ref);
+      if (!/^[1-3]? ?[A-Za-z ]{2,20} \d+(:\d+(-\d+)?)?$/.test(ref)) return res.status(400).json({ error: 'Bad reference' });
+      let [c] = await sql`select body from scripture where ref=${ref}`;
+      if (!c) {
+        const r = await fetch('https://bible-api.com/' + ref.replace(/ /g, '+') + '?translation=kjv');
+        const j = await r.json();
+        if (!j.verses) return res.status(502).json({ error: 'Scripture unavailable right now' });
+        const body = JSON.stringify(j.verses.map(v => [v.verse, v.text.trim()]));
+        await sql`insert into scripture(ref,body) values(${ref},${body}) on conflict do nothing`;
+        c = { body };
+      }
+      return res.json({ v: JSON.parse(c.body) });
+    }
     if (b.a === 'admin') {
       if (!adm) return res.status(403).json({ error: 'Wrong admin code' });
       if (b.op === 'approve') await sql`update prayers set status='approved' where id=${+b.id}`;
